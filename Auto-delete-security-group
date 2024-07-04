@@ -1,0 +1,37 @@
+import boto3
+import json
+
+ec2 = boto3.client('ec2')
+ses = boto3.client('ses')
+
+# Email addresses
+email_sender = 'your-email@gmail.com'
+email_recipient = 'your-email@gmail.com'
+subject = 'Security Group with 0.0.0.0/0 Deleted'
+
+def lambda_handler(event, context):
+    response = ec2.describe_security_groups()
+    
+    for sg in response['SecurityGroups']:
+        sg_id = sg['GroupId']
+        sg_name = sg.get('GroupName', 'Unnamed')
+        
+        for permission in sg['IpPermissions']:
+            for ip_range in permission.get('IpRanges', []):
+                if ip_range.get('CidrIp') == '0.0.0.0/0':
+                    ec2.delete_security_group(GroupId=sg_id)
+                    
+                    body = f"The security group '{sg_name}' with ID '{sg_id}' allowing 0.0.0.0/0 has been deleted."
+                    send_email(body)
+                    print(body)
+                    break
+
+def send_email(body):
+    response = ses.send_email(
+        Source=email_sender,
+        Destination={'ToAddresses': [email_recipient]},
+        Message={
+            'Subject': {'Data': subject},
+            'Body': {'Text': {'Data': body}}
+        }
+    )
