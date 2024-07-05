@@ -1,37 +1,54 @@
-import boto3
 import json
+import boto3
+import logging
 
+# Initialize clients
 ec2 = boto3.client('ec2')
-ses = boto3.client('ses')
+sns = boto3.client('sns')
 
-# Email addresses
-email_sender = 'your-email@gmail.com'
-email_recipient = 'your-email@gmail.com'
-subject = 'Security Group with 0.0.0.0/0 Deleted'
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# SNS Topic ARN
+sns_topic_arn = 'arn:aws:sns:us-east-1:058264452544:Auto-delete-SG'  # Replace with your SNS topic ARN
 
 def lambda_handler(event, context):
-    response = ec2.describe_security_groups()
+    logger.info("Received event: %s", json.dumps(event, indent=2))
     
-    for sg in response['SecurityGroups']:
-        sg_id = sg['GroupId']
-        sg_name = sg.get('GroupName', 'Unnamed')
+    for record in event.get('Records', []):
+        detail = record.get('detail', {})
+        sg_id = detail.get('responseElements', {}).get('groupId')
         
-        for permission in sg['IpPermissions']:
-            for ip_range in permission.get('IpRanges', []):
-                if ip_range.get('CidrIp') == '0.0.0.0/0':
-                    ec2.delete_security_group(GroupId=sg_id)
-                    
-                    body = f"The security group '{sg_name}' with ID '{sg_id}' allowing 0.0.0.0/0 has been deleted."
-                    send_email(body)
-                    print(body)
-                    break
+        if not sg_id:
+            logger.error("No security group ID found in event detail")
+            continue
 
-def send_email(body):
-    response = ses.send_email(
-        Source=email_sender,
-        Destination={'ToAddresses': [email_recipient]},
-        Message={
-            'Subject': {'Data': subject},
-            'Body': {'Text': {'Data': body}}
-        }
-    )
+        try:
+            logger.info(f"Processing security group {sg_id}")
+            response = ec2.describe_security_groups(GroupIds=[sg_id])
+            security_group = response['SecurityGroups'][0]
+            
+            for permission in security_group.get('IpPermissions', []):
+                for ip_range in permission.get('IpRanges', []):
+                    if ip_range.get('CidrIp') == '0.0.0.0/0':
+                        logger.info(f"Security group {sg_id} allows 0.0.0.0/0, deleting")
+                        ec2.delete_security_group(GroupId=sg_id)
+                        
+                        message = f"The security group with ID '{sg_id}' allowing 0.0.0.0/0 has been deleted."
+                        publish_to_sns(message)
+                        logger.info(message)
+                        break
+        except Exception as e:
+            logger.error(f"Error processing security group {sg_id}: {e}")
+
+def publish_to_sns(message):
+    try:
+        response = sns.publish(
+            TopicArn=sns_topic_arn,
+            Message=message,
+            Subject='Security Group with 0.0.0.0/0 Deleted'
+        )
+        logger.info("SNS publish response: %s", response)
+    except Exception as e:
+        logger.error(f"Error publishing to SNS: {e}")
